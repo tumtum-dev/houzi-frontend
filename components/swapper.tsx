@@ -2,7 +2,9 @@
 
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import Image from "next/image";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
 import { encodeFunctionData, parseUnits, type Address } from "viem";
 import { useAccount, useBalance, useSwitchChain, useWalletClient } from "wagmi";
 import {
@@ -33,7 +35,6 @@ import {
   apeChain,
   apePublicClient,
   APECHAIN_EXPLORER_URL,
-  walletConnectProjectId,
 } from "@/lib/web3";
 
 type QuoteState = {
@@ -45,6 +46,7 @@ type QuoteState = {
 type TokenModalState = {
   isOpen: boolean;
   loading: boolean;
+  mode: "houzi-token" | "pair-token";
   pendingImport: Token | null;
   query: string;
 };
@@ -53,6 +55,9 @@ const DEFAULT_SLIPPAGE = "1.0";
 const DEADLINE_SECONDS = 60 * 20;
 
 export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { address: account, chainId, isConnected } = useAccount();
   const { switchChainAsync } = useSwitchChain();
   const { data: walletClient } = useWalletClient();
@@ -71,6 +76,7 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
   const [selectorState, setSelectorState] = useState<TokenModalState>({
     isOpen: false,
     loading: false,
+    mode: "pair-token",
     pendingImport: null,
     query: "",
   });
@@ -515,20 +521,28 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
   }
 
   async function finalizeImport(token: Token) {
-    const nextImported = [...importedTokens];
-    if (!nextImported.some((item) => item.address === token.address)) {
-      nextImported.unshift({ ...token, imported: true });
-      setImportedTokens(nextImported);
-      saveImportedTokens(nextImported);
-    }
+    persistImportedToken(token);
 
     await addWalletWatchAsset(token);
+
+    if (selectorState.mode === "houzi-token" && token.address) {
+      setHouziTokenInUrl(token.address);
+      setSelectorState({
+        isOpen: false,
+        loading: false,
+        mode: selectorState.mode,
+        pendingImport: null,
+        query: "",
+      });
+      return;
+    }
 
     startTransition(() => {
       setSelectedPairToken(token);
       setSelectorState({
         isOpen: false,
         loading: false,
+        mode: selectorState.mode,
         pendingImport: null,
         query: "",
       });
@@ -537,11 +551,16 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
 
   const filteredTokens = useMemo(() => {
     const query = selectorState.query.trim().toLowerCase();
+    const pool =
+      selectorState.mode === "pair-token"
+        ? availablePairTokens
+        : importedTokens.filter((token) => token.address !== null);
+
     if (!query) {
-      return availablePairTokens;
+      return pool;
     }
 
-    return availablePairTokens.filter((token) => {
+    return pool.filter((token) => {
       const address = token.address?.toLowerCase() ?? "";
       return (
         token.symbol.toLowerCase().includes(query) ||
@@ -549,7 +568,7 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
         address.includes(query)
       );
     });
-  }, [availablePairTokens, selectorState.query]);
+  }, [availablePairTokens, importedTokens, selectorState.mode, selectorState.query]);
 
   const primaryButtonLabel = !isConnected
     ? "Connect wallet"
@@ -581,10 +600,58 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
     await handleSwap();
   }
 
-  function openPairTokenSelector() {
+  function openSelector(mode: "houzi-token" | "pair-token") {
     setSelectorState({
       isOpen: true,
       loading: false,
+      mode,
+      pendingImport: null,
+      query: "",
+    });
+  }
+
+  function setHouziTokenInUrl(address: Address) {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set("to", address);
+    router.replace(`${pathname}?${nextParams.toString()}`, { scroll: false });
+  }
+
+  function persistImportedToken(token: Token) {
+    const nextImported = [...importedTokens];
+    if (!nextImported.some((item) => item.address === token.address)) {
+      nextImported.unshift({ ...token, imported: true });
+      setImportedTokens(nextImported);
+      saveImportedTokens(nextImported);
+    }
+
+    return nextImported;
+  }
+
+  async function handleSelectToken(token: Token) {
+    if (selectorState.mode === "pair-token") {
+      startTransition(() => {
+        setSelectedPairToken(token);
+        setSelectorState({
+          isOpen: false,
+          loading: false,
+          mode: selectorState.mode,
+          pendingImport: null,
+          query: "",
+        });
+      });
+      return;
+    }
+
+    if (!token.address) {
+      return;
+    }
+
+    persistImportedToken(token);
+    setHouziTokenInUrl(token.address);
+    setSelectorState({
+      isOpen: false,
+      loading: false,
+      mode: selectorState.mode,
       pendingImport: null,
       query: "",
     });
@@ -631,7 +698,7 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
           </div>
           <div>
             <h1 className="text-2xl font-semibold tracking-[0.22em] text-[#ff4d57] uppercase">
-              Swapper
+              Houzi Swapper
             </h1>
             <p className="mt-2 text-sm text-[#c7a1a4]">
               Route between Houzi and ApeChain assets in either direction.
@@ -645,7 +712,7 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
             token={effectiveFromToken}
             amount={amountIn}
             onAmountChange={setAmountIn}
-            onTokenClick={!isReversed ? openPairTokenSelector : undefined}
+            onTokenClick={() => openSelector(isReversed ? "houzi-token" : "pair-token")}
             balance={fromBalance.data?.formatted}
             balanceSymbol={fromBalance.data?.symbol}
           />
@@ -657,7 +724,7 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
               className="flex items-center gap-3 rounded-full border border-[#4d1218] bg-[#100607] px-4 py-2 font-mono text-[11px] uppercase tracking-[0.28em] text-[#ff646d] transition hover:border-[#ff4d57] hover:bg-[#17090b]"
             >
               <span>Flip</span>
-              <span aria-hidden>⇅</span>
+              <SwapDirectionIcon className="h-3.5 w-3.5" />
             </button>
           </div>
 
@@ -671,16 +738,20 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
             }
             balance={toBalance.data?.formatted}
             balanceSymbol={toBalance.data?.symbol}
-            onTokenClick={isReversed ? openPairTokenSelector : undefined}
+            onTokenClick={() => openSelector(isReversed ? "pair-token" : "houzi-token")}
             readOnly
           />
 
           <div className="mt-4 space-y-3 rounded-[1.4rem] border border-[#331012] bg-[#0a0a0a] px-4 py-4 text-sm text-[#c8aaad]">
-            <InfoRow
-              label="Houzi token"
-              value={effectiveHouziToken?.address ? formatAddress(effectiveHouziToken.address) : "Missing"}
-              mono
-            />
+            {effectiveHouziToken?.address ? (
+              <LinkedInfoRow
+                label="Houzi token"
+                href={`https://apescan.io/token/${effectiveHouziToken.address}`}
+                value={formatAddress(effectiveHouziToken.address)}
+              />
+            ) : (
+              <InfoRow label="Houzi token" value="Missing" mono />
+            )}
             <InfoRow
               label="Route"
               value={
@@ -714,13 +785,6 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
               mono
             />
           </div>
-
-          {walletConnectProjectId === "MISSING_PROJECT_ID" ? (
-            <p className="mt-4 rounded-2xl border border-[#5d310f] bg-[#1a1007] px-4 py-3 text-xs text-[#ffc181]">
-              <code>NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID</code> is not set yet. Injected wallets can
-              still work, but WalletConnect needs that env value.
-            </p>
-          ) : null}
 
           {houziError ? <Notice tone="error">{houziError}</Notice> : null}
           {slippageError ? <Notice tone="error">{slippageError}</Notice> : null}
@@ -764,6 +828,7 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
           setSelectorState({
             isOpen: false,
             loading: false,
+            mode: selectorState.mode,
             pendingImport: null,
             query: "",
           })
@@ -777,17 +842,14 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
             query,
           }))
         }
-        onSelect={(token) => {
-          startTransition(() => {
-            setSelectedPairToken(token);
-            setSelectorState({
-              isOpen: false,
-              loading: false,
-              pendingImport: null,
-              query: "",
-            });
-          });
-        }}
+        onSelect={handleSelectToken}
+        title={selectorState.mode === "pair-token" ? "Select Token" : "Set Houzi Token"}
+        description={
+          selectorState.mode === "pair-token"
+            ? "Choose a default or previously imported token."
+            : "Paste a contract address or reuse an imported token for the Houzi side."
+        }
+        showImportAction={selectorState.mode === "houzi-token"}
       />
     </div>
   );
@@ -901,7 +963,7 @@ function TokenPanel({
       <div className="flex items-center gap-3">
         <button
           type="button"
-          className={`flex min-w-[10rem] items-center justify-between rounded-[1.15rem] border px-4 py-3 text-left transition ${
+          className={`flex min-h-[72px] min-w-[10rem] items-center justify-between rounded-[1.15rem] border px-4 py-3 text-left transition ${
             onTokenClick
               ? "border-[#612127] bg-[#17090b] text-white hover:border-[#ff4d57]"
               : "cursor-default border-[#41161a] bg-[#130708] text-[#f0b0b4]"
@@ -916,23 +978,32 @@ function TokenPanel({
               {token?.name ?? "Loading token"}
             </span>
           </span>
-          {onTokenClick ? <span className="text-[#ff4d57]">v</span> : null}
+          {onTokenClick ? <ChevronDownIcon className="h-4 w-4 text-[#ff4d57]" /> : null}
         </button>
 
-        <input
-          value={amount}
-          onChange={(event) => onAmountChange?.(event.target.value)}
-          readOnly={readOnly}
-          placeholder="0.00"
-          inputMode="decimal"
-          className="w-full border-none bg-transparent text-right font-mono text-3xl font-semibold text-white outline-none placeholder:text-[#4d3335]"
-        />
+        <div
+          className={`flex min-h-[72px] w-full items-center rounded-[1.15rem] border bg-[#14090b] px-4 py-3 shadow-[0_0_0_1px_rgba(255,77,87,0.12)] transition ${
+            readOnly
+              ? "border-[#4a171c]"
+              : "border-[#7f1f29] focus-within:border-[#ff4d57] focus-within:shadow-[0_0_0_1px_rgba(255,77,87,0.34),0_0_18px_rgba(255,77,87,0.16)]"
+          }`}
+        >
+          <input
+            value={amount}
+            onChange={(event) => onAmountChange?.(event.target.value)}
+            readOnly={readOnly}
+            placeholder="0.00"
+            inputMode="decimal"
+            className="w-full border-none bg-transparent text-right font-mono text-3xl font-semibold text-white outline-none placeholder:text-[#4d3335]"
+          />
+        </div>
       </div>
     </div>
   );
 }
 
 function TokenSelectorModal({
+  description,
   filteredTokens,
   isOpen,
   loading,
@@ -943,7 +1014,10 @@ function TokenSelectorModal({
   onSelect,
   pendingImport,
   query,
+  showImportAction,
+  title,
 }: {
+  description: string;
   filteredTokens: Token[];
   isOpen: boolean;
   loading: boolean;
@@ -954,33 +1028,47 @@ function TokenSelectorModal({
   onSelect: (token: Token) => void;
   pendingImport: Token | null;
   query: string;
+  showImportAction: boolean;
+  title: string;
 }) {
   if (!isOpen) {
     return null;
   }
 
+  if (typeof document === "undefined") {
+    return null;
+  }
+
   const maybeAddress = normalizeAddress(query);
 
-  return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/75 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[1.8rem] border border-[#4d1419] bg-[#060606] p-5 shadow-[0_0_80px_rgba(255,77,87,0.16)]">
+  return createPortal(
+    <div
+      className="fixed inset-0 z-30 flex items-center justify-center bg-black/75 px-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-[1.8rem] border border-[#4d1419] bg-[#060606] p-5 shadow-[0_0_80px_rgba(255,77,87,0.16)]"
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-[0.28em] text-[#ff6a73]">
-            Select Token
+            {title}
           </h2>
           <button type="button" onClick={onClose} className="text-[#b27e82] transition hover:text-white">
             Close
           </button>
         </div>
 
+        <p className="mb-4 text-sm text-[#b48a8e]">{description}</p>
+
         <input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Search symbol, name, or paste address"
+          placeholder={showImportAction ? "Paste token address or search imports" : "Search symbol, name, or address"}
           className="mb-4 w-full rounded-[1.1rem] border border-[#341014] bg-[#0f0f0f] px-4 py-3 text-sm text-white outline-none placeholder:text-[#5c4042] focus:border-[#ff4d57]"
         />
 
-        {maybeAddress && !filteredTokens.some((token) => token.address === maybeAddress) ? (
+        {showImportAction && maybeAddress && !filteredTokens.some((token) => token.address === maybeAddress) ? (
           <button
             type="button"
             onClick={onLoadImport}
@@ -1006,7 +1094,12 @@ function TokenSelectorModal({
           </button>
         ) : null}
 
-        <div className="max-h-80 space-y-2 overflow-y-auto pr-1">
+        <div className="space-y-2 pr-1">
+          {filteredTokens.length > 0 ? (
+            <p className="pb-1 text-[11px] uppercase tracking-[0.22em] text-[#8f6e71]">
+              {showImportAction ? "Imported tokens" : "Available tokens"}
+            </p>
+          ) : null}
           {filteredTokens.map((token) => (
             <button
               key={token.isNative ? "native" : token.address}
@@ -1029,7 +1122,8 @@ function TokenSelectorModal({
           ))}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1041,6 +1135,121 @@ function InfoRow({ label, mono, value }: { label: string; mono?: boolean; value:
         {value}
       </span>
     </div>
+  );
+}
+
+function LinkedInfoRow({
+  href,
+  label,
+  value,
+}: {
+  href: string;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="uppercase tracking-[0.22em] text-[#8f6e71]">{label}</span>
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="flex items-center gap-2 font-mono text-right text-[#f2d8da] transition hover:text-[#ff8b92]"
+      >
+        <span>{value}</span>
+        <ExternalLinkIcon className="h-3.5 w-3.5 text-[#ff646d]" />
+      </a>
+    </div>
+  );
+}
+
+function ChevronDownIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+      className={className}
+    >
+      <path
+        d="M4 6.25L8 10.25L12 6.25"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ExternalLinkIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+      className={className}
+    >
+      <path
+        d="M6 3.5H3.75C3.06 3.5 2.5 4.06 2.5 4.75V12.25C2.5 12.94 3.06 13.5 3.75 13.5H11.25C11.94 13.5 12.5 12.94 12.5 12.25V10"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8.25 3.5H13.5V8.75"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M13.25 3.75L7 10"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SwapDirectionIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+      className={className}
+    >
+      <path
+        d="M3 5H12"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M10 3L12.5 5L10 7"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M13 11H4"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+      <path
+        d="M6 9L3.5 11L6 13"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
@@ -1061,7 +1270,7 @@ function EditableInfoRow({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           inputMode="decimal"
-          className="w-20 rounded-full border border-[#4f171c] bg-[#14090b] px-3 py-1.5 text-right font-mono text-[#f2d8da] outline-none focus:border-[#ff4d57]"
+          className="w-20 rounded-full border border-[#7f1f29] bg-[#14090b] px-3 py-1.5 text-right font-mono text-[#f2d8da] shadow-[0_0_0_1px_rgba(255,77,87,0.12)] outline-none transition focus:border-[#ff4d57] focus:shadow-[0_0_0_1px_rgba(255,77,87,0.34),0_0_18px_rgba(255,77,87,0.16)]"
         />
         <span className="font-mono text-[#f2d8da]">%</span>
       </div>
@@ -1115,7 +1324,7 @@ function getReadableError(error: unknown) {
 }
 
 const buttonClassName =
-  "rounded-full border border-[#ff4d57] bg-black/70 px-5 py-3 text-xs font-semibold uppercase tracking-[0.28em] text-[#ff4d57] transition hover:bg-[#18080b]";
+  "rounded-full border border-[#ff4d57] bg-black/70 px-3 py-2 text-sm font-medium text-[#ff4d57] transition hover:bg-[#18080b]";
 
 function createSwapDeadline() {
   return BigInt(Math.floor(Date.now() / 1000) + DEADLINE_SECONDS);
