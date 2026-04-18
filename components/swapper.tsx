@@ -691,7 +691,7 @@ export function Swapper({ houziAddress }: { houziAddress: Address | null }) {
         </button>
       </div>
 
-      <main className="relative z-10 flex w-full max-w-xl flex-col items-center justify-center">
+      <main className="relative z-10 flex w-full max-w-xl flex-col items-center justify-center max-[640px]:mt-12">
         <div className="mb-8 flex flex-col items-center gap-5 text-center">
           <div className="relative h-28 w-28 overflow-hidden rounded-full border border-[#791d24] bg-black/70 shadow-[0_0_60px_rgba(255,77,87,0.18)] sm:h-36 sm:w-36">
             <Image src="/logo.jpg" alt="Houzi logo" fill priority className="object-cover" />
@@ -960,10 +960,10 @@ function TokenPanel({
         </span>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 max-[640px]:flex-col max-[640px]:items-stretch">
         <button
           type="button"
-          className={`flex min-h-[72px] min-w-[10rem] items-center justify-between rounded-[1.15rem] border px-4 py-3 text-left transition ${
+          className={`flex min-h-[72px] min-w-[10rem] max-[640px]:w-full max-[640px]:min-w-0 items-center justify-between rounded-[1.15rem] border px-4 py-3 text-left transition ${
             onTokenClick
               ? "border-[#612127] bg-[#17090b] text-white hover:border-[#ff4d57]"
               : "cursor-default border-[#41161a] bg-[#130708] text-[#f0b0b4]"
